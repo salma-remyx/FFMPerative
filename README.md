@@ -64,3 +64,23 @@ ffmperative compose --clips /path/to/video/dir --output /path/to/my_video.mp4 --
 
 ### Community
 * [Join us on Discord](https://discord.com/invite/b2yGuCNpuC)
+
+### Trajectory Search — adapted from *Self-Improving Language Models with Bidirectional Evolutionary Search*
+
+`ffmperative.ffmp(..., num_candidates=N)` can sample several agent rollouts and
+pick the strongest tool-call sequence before executing it, instead of trusting a
+single autoregressive draft (best-of-N). The selection in
+`ffmperative/trajectory_search.py` brings two ideas from BES
+([arXiv:2605.28814](https://arxiv.org/abs/2605.28814)) to inference time:
+
+- **Dense per-step feedback** — each tool call is treated as a checkable
+  subgoal (known tool, dependencies bound by earlier steps) and scored, rather
+  than judging only the final result.
+- **Forward candidate evolution** — a recombination operator splices groundable
+  partial trajectories from different rollouts into a candidate no single
+  rollout produced.
+
+It is purely inference-time: no training, checkpoints, or gradients are
+introduced.
+
+Contributed via [Remyx Recommendation](https://engine.remyx.ai).

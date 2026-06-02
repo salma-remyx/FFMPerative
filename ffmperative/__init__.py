@@ -12,6 +12,7 @@ from .prompts import MAIN_PROMPT
 from .utils import download_ffmp
 from .tool_mapping import generate_tools_mapping
 from .interpretor import evaluate, extract_function_calls
+from .trajectory_search import search_best_trajectory
 
 tools = generate_tools_mapping()
 
@@ -55,18 +56,20 @@ def run_remote(prompt):
             return answer 
     return result
 
-def ffmp(prompt, remote=False, tools=tools):
-    if remote:
-        parsed_output = run_remote(prompt)
-    else:
-        parsed_output = run_local(prompt)
-    if parsed_output:
-        try:
-            extracted_output = extract_function_calls(parsed_output, tools)
-            parsed_ast = ast.parse(extracted_output)
-            result = evaluate(parsed_ast, tools)
-            return result
-        except SyntaxError as e:
-            print(f"Syntax error in parsed output: {e}")
-    else:
+def ffmp(prompt, remote=False, tools=tools, num_candidates=1):
+    generate = run_remote if remote else run_local
+    # Sample num_candidates rollouts and extract each as a tool-call trajectory.
+    extracted = [extract_function_calls(o, tools) for o in
+                 (generate(prompt) for _ in range(max(1, num_candidates))) if o]
+    if not extracted:
         return None
+    # BES forward search: score, recombine, and select the strongest trajectory
+    # instead of trusting a single autoregressive rollout (best-of-N).
+    extracted_output = search_best_trajectory(extracted, tools) if len(extracted) > 1 \
+        else extracted[0]
+    try:
+        parsed_ast = ast.parse(extracted_output)
+        result = evaluate(parsed_ast, tools)
+        return result
+    except SyntaxError as e:
+        print(f"Syntax error in parsed output: {e}")
