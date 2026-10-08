@@ -1,0 +1,107 @@
+question:
+  kind: compare
+  ask: "Does the BES bidirectional evolutionary search in this PR improve the self-improvement loop's held-out accuracy over the repo's current baseline on a small fixed eval set, within one short run?"
+benchmarks:
+  - name: bes-heldout-accuracy
+    suite: "notebook:eval/eval_bes_heldout_accuracy.ipynb"
+    scorer: heldout_accuracy
+    baseline: main
+    metrics:
+      # Threshold derivation: N=8 = 3 complete-rollout + 3 split-partial + 2 unrepairable
+      # items. Baseline (main, 1 rollout/prompt) can only solve complete items -> 3/8 = 0.375.
+      # With K=2 the recombined full chain scores 1+0.01*s (1.02 two-step, 1.03 three-step)
+      # and strictly dominates every split original (<= 1.02), so BES is expected 6/8 = 0.75.
+      # 0.625 = 5/8 demands >= 2 net repairs over baseline with all complete items held,
+      # tolerating one failed repair.
+      - name: heldout_accuracy
+        direction: max
+        threshold: 0.625
+        role: target
+        bar: goal
+        reads_as: "share of 8 frozen items whose executed call sequence matches the target; head runs num_candidates=2, main one rollout"
+      # Baseline clears 1.0 by construction (rollout 0 is the full chain on these items);
+      # the floor catches search degrading an already-complete rollout.
+      - name: complete_items_accuracy
+        direction: max
+        threshold: 1.0
+        role: guardrail
+        bar: floor
+        reads_as: "share of the 3 complete-rollout items still solved; baseline holds 1.0, so any drop is a selection regression"
+      # Threshold derivation: 0.6667 = 2/3 split items repaired. With the guardrail
+      # holding 3/3 complete and unrepairable at 0, target 5/8 is exactly >= 2 of 3
+      # split items solved, so this bar mirrors the target's one-failed-repair
+      # tolerance while isolating the recombination mechanism (baseline is 0.0 here).
+      - name: split_items_accuracy
+        direction: max
+        threshold: 0.6667
+        role: diagnostic
+        reads_as: "share of the 3 split-partial items solved; 0.0 on baseline by construction - isolates the recombination repair"
+      # Threshold derivation: 0.0 is the only correct value - these items' target
+      # chains are unreachable from unknown-tool rollouts, so any nonzero share
+      # means an unverified junk chain executed. Both arms are 0.0 by construction.
+      - name: unrepairable_items_accuracy
+        direction: min
+        threshold: 0.0
+        role: diagnostic
+        reads_as: "share of 2 unknown-tool items whose unreachable target chain ran; expected 0.0 on both arms - any hit executed junk"
+      # Threshold derivation: 0.375 = 3/8, the single-rollout result (baseline arm's
+      # own run; head's num_candidates=1 run consumes rollout 0 only). The default
+      # path must reproduce it, so the bar sits exactly on that value; both arms clear.
+      - name: default_path_heldout_accuracy
+        direction: max
+        threshold: 0.375
+        role: diagnostic
+        reads_as: "accuracy of the num_candidates=1 default path; on head it must reproduce the baseline arm's single-rollout result"
+      - name: rollouts_consumed
+        direction: min
+        threshold: 16
+        role: cost
+        reads_as: "stubbed generator calls used by the target measurement; budget 2 per item x 8 items = 16"
+    policy:
+      guardrail_veto: true
+compute:
+  tier: cpu
+loop:
+  max_iterations: 8
+  fix_code: true
+held_constant:
+  - "frozen per-prompt recorded rollout tables, identical on both arms (baseline consumes rollout 0, feature consumes 2)"
+  - "same 3-tool stub registry {get_video_info, sample_video, compress_video} recording executed calls, mirroring tests/test_trajectory_search.py"
+  - "same public pipeline ffmperative.ffmp -> extract_function_calls -> search_best_trajectory -> ast.parse -> interpretor.evaluate"
+  - "same item order and same success criterion (recorded executed call sequence == target chain), run_local stubbed so no network and no ffmp binary download"
+avoid:
+  - "live run_remote starcoder inference (network-bound, non-deterministic, unbounded 429 recursion) - the generator is stubbed per the repo's own test style"
+  - "judging success by trajectory_search's proxy score instead of the executed call-sequence match (the 0.01/step depth bias prefers longer chains regardless of semantic correctness)"
+  - "wall-clock timing on shared CPU"
+  - "unpinned revisions or live APIs for anything the frozen tables already determine"
+provenance:
+  heldout_accuracy: "user_guidance"
+  complete_items_accuracy: "maintainer_comment:@salma-remyx"
+  split_items_accuracy: "maintainer_comment:@salma-remyx"
+  unrepairable_items_accuracy: "maintainer_comment:@salma-remyx"
+  default_path_heldout_accuracy: "inferred"
+  rollouts_consumed: "inferred"
+  held_constant: "repo_runner:tests/test_trajectory_search.py"
+  suite: "synthesized"
+report:
+  headline: "BES forward evolution repairs split-partial rollouts on the frozen eval set, lifting held-out accuracy above the single-rollout baseline while the num_candidates=1 default path is unchanged"
+  findings:
+    - "Held-out accuracy on the frozen 8-item set is {heldout_accuracy} (single-rollout baseline expected 3/8 = 0.375)"
+    - "{split_items_accuracy:%} of split-partial items are solved by recombination (0.0 on the baseline arm by construction)"
+    - "{complete_items_accuracy:%} of complete-rollout items stay solved (guardrail floor 1.0)"
+    - "{unrepairable_items_accuracy:%} of unrepairable items executed their unreachable target (expected 0.0)"
+    - "The num_candidates=1 default path scores {default_path_heldout_accuracy}, matching the baseline arm's single-rollout behaviour"
+    - "The target pass consumed {rollouts_consumed} stubbed rollouts (budget 16)"
+  establishes:
+    - "Forward candidate evolution (dense per-step grounding score + cross-rollout recombination before evaluate) improves held-out accuracy over the single-rollout path on a fixed split-partial rollout distribution, resting on {heldout_accuracy} against the 0.375 baseline"
+    - "The PR's default path is behaviour-preserving at num_candidates=1, resting on {default_path_heldout_accuracy}"
+  does_not_establish:
+    - "The paper's full bidirectional claim - backward goal decomposition is unimplemented, so a pass supports only the forward-evolution half"
+    - "Semantic correctness - the verifier is syntactic (known tool + bound names), so grounded-but-wrong chains still pass"
+    - "Live-model accuracy or comparability to the paper's three open problem-solving benchmarks - the generator is a frozen recorded rollout table"
+  not_measured:
+    - "Sample-complexity reduction and entropy-shell escape (theoretical claims)"
+    - "Post-training gains (the change is inference-time only)"
+    - "Wall-clock latency, token cost, and best-of-N-with-recombine-off ablation"
+  caveat: "BES's bidirectional half and real reward verifier are unimplemented; this PR's syntactic grounding check only repairs grounding failures and is inert on semantically wrong-but-grounded chains."
+  next: "Re-run with a live or larger recorded rollout distribution, a semantic success verifier, and an explicit recombine_enabled=False best-of-N ablation to separate recombination from extra sampling."
